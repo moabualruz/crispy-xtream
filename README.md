@@ -2,30 +2,28 @@
 
 Async Xtream Codes API client for IPTV services.
 
-## Status
+## What This Crate Is
 
-Extracted from CrispyTivi. Intended as a reusable Rust client crate for Xtream Codes compatible providers.
+`crispy-xtream` provides a typed async client for Xtream Codes compatible IPTV providers. It wraps the common Xtream API surface used by IPTV apps and sync pipelines without dragging in any app-specific persistence or UI code.
 
-## What This Crate Provides
+## What It Provides
 
-- authentication against Xtream-compatible endpoints
-- typed access to:
-  - profile/account info
-  - live categories
-  - VOD categories
-  - series categories
-  - live streams
-  - VOD streams
-  - series listings
-  - short/full EPG data
-- typed protocol models and URL helpers
+- credentials and client configuration types
+- authentication
+- live, VOD, and series category fetches
+- live stream, VOD stream, and series listing fetches
+- short/full EPG fetches
+- typed Xtream response models
+- helper URL generation
 
 ## Installation
 
 ```toml
 [dependencies]
-crispy-xtream = "0.1"
+crispy-xtream = "0.1.1"
 ```
+
+MSRV: Rust `1.85`
 
 ## Quick Start
 
@@ -39,29 +37,35 @@ let client = XtreamClient::new(XtreamCredentials::new(
     "password",
 ))?;
 
-let _profile = client.authenticate().await?;
+let profile = client.authenticate().await?;
+let _live = client.get_live_streams(None).await?;
+let _xmltv = client.xmltv_url();
+
+assert!(!profile.user_info.username.is_empty());
 # Ok(())
 # }
 ```
 
-## Primary Use Cases
+## Main Public Types
 
-- IPTV applications
-- provider sync services
-- metadata ingestion pipelines
-- account validation tools
+- `XtreamClient`
+- `XtreamCredentials`
+- `XtreamClientConfig`
+- `XtreamError`
+- protocol models re-exported from `types`
 
-## Relationship To Other Crates
+## Typical Uses
 
-- uses `crispy-iptv-types`
-- typically paired with app-side mapping code
+- syncing IPTV provider content into an app/backend
+- validating account credentials
+- building provider-specific import tools
 
-## Non-Goals
+## Current Limitations
 
-- playback probing
-- app persistence
-- Flutter/FFI integration
+- this crate only covers Xtream-compatible providers; it does not try to normalize every broken vendor variation
+- it does not persist results
+- it does not handle playback probing or stream health
 
-## Caveats
+## License
 
-- public release should document auth failure modes, rate limiting behavior, and compatibility assumptions for non-standard Xtream providers
+See `LICENSE.md` and `NOTICE.md`.
