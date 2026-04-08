@@ -1,0 +1,30 @@
+[package]
+name = "crispy-xtream"
+description = "Async Xtream Codes API client"
+version = "0.1.1"
+edition = "2024"
+license = "CC-BY-NC-SA-4.0"
+repository = "https://github.com/moabualruz/crispy-xtream"
+homepage = "https://github.com/moabualruz/crispy-xtream"
+documentation = "https://docs.rs/crispy-xtream"
+readme = "README.md"
+keywords = ["iptv", "xtream", "api-client", "streaming", "vod"]
+categories = ["api-bindings", "multimedia", "network-programming"]
+rust-version = "1.85"
+
+[dependencies]
+crispy-iptv-types = "0.1.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "json", "gzip"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+percent-encoding = "2"
+url = "2"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
