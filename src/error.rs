@@ -77,7 +77,7 @@ impl From<XtreamError> for crispy_iptv_types::IptvError {
             XtreamError::Network(msg) => Self::Network(msg),
             XtreamError::Timeout(msg) => Self::Timeout(0).into_network(msg),
             XtreamError::UnexpectedResponse(msg) => Self::UnexpectedResponse(msg),
-            XtreamError::NotFound(msg) => Self::UnexpectedResponse(msg),
+            XtreamError::NotFound(msg) => Self::NotFound(msg),
             XtreamError::InvalidUrl(msg) => Self::InvalidUrl(msg),
         }
     }

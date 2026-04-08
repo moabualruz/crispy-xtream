@@ -24,6 +24,7 @@ percent-encoding = "2"
 url = "2"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tracing = "0.1"
+secrecy = "0.10"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::StatusCode;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -18,7 +19,7 @@ use crate::types::{
     XtreamUserProfile,
 };
 use crate::url::{
-    build_api_url, build_stream_url, build_timeshift_url, build_xmltv_url,
+    build_api_url, build_api_url_with_params, build_stream_url, build_timeshift_url, build_xmltv_url,
     effective_channel_extension,
 };
 
@@ -37,6 +38,8 @@ pub struct XtreamClientConfig {
     pub accept_invalid_certs: bool,
     /// Preferred stream format (default: TS).
     pub preferred_format: StreamFormat,
+    /// Number of times to retry after a 429 response.
+    pub rate_limit_retries: u32,
 }
 
 impl Default for XtreamClientConfig {
@@ -46,6 +49,7 @@ impl Default for XtreamClientConfig {
             request_timeout: Duration::from_secs(120),
             accept_invalid_certs: false,
             preferred_format: StreamFormat::Ts,
+            rate_limit_retries: 1,
         }
     }
 }
@@ -58,8 +62,8 @@ impl Default for XtreamClientConfig {
 #[derive(Clone)]
 pub struct XtreamCredentials {
     pub base_url: String,
-    pub username: String,
-    pub password: String,
+    pub username: SecretString,
+    pub password: SecretString,
 }
 
 impl XtreamCredentials {
@@ -75,8 +79,8 @@ impl XtreamCredentials {
         }
         Self {
             base_url: base,
-            username: username.into(),
-            password: password.into(),
+            username: SecretString::new(username.into().into()),
+            password: SecretString::new(password.into().into()),
         }
     }
 }
@@ -104,8 +108,8 @@ pub struct XtreamClient {
     http: reqwest::Client,
     creds: XtreamCredentials,
     config: XtreamClientConfig,
-    /// Cached profile after `authenticate()`.
-    profile: Arc<RwLock<Option<XtreamUserProfile>>>,
+    /// Cached full profile after `authenticate()`.
+    profile: Arc<RwLock<Option<XtreamProfile>>>,
 }
 
 impl std::fmt::Debug for XtreamClient {
@@ -167,7 +171,7 @@ impl XtreamClient {
 
     /// The username used for authentication.
     pub fn username(&self) -> &str {
-        &self.creds.username
+        self.creds.username.expose_secret()
     }
 
     /// The configured preferred stream format.
@@ -185,8 +189,8 @@ impl XtreamClient {
     pub async fn authenticate(&self) -> Result<XtreamProfile, XtreamError> {
         let url = build_api_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             "get_profile",
         );
 
@@ -202,7 +206,7 @@ impl XtreamClient {
 
         // Cache the profile.
         let mut cached = self.profile.write().await;
-        *cached = Some(profile.user_info.clone());
+        *cached = Some(profile.clone());
 
         Ok(profile)
     }
@@ -212,11 +216,22 @@ impl XtreamClient {
         {
             let cached = self.profile.read().await;
             if let Some(ref p) = *cached {
-                return Ok(p.clone());
+                return Ok(p.user_info.clone());
             }
         }
         let profile = self.authenticate().await?;
         Ok(profile.user_info)
+    }
+
+    /// Get the cached full profile, authenticating first if needed.
+    pub async fn get_profile(&self) -> Result<XtreamProfile, XtreamError> {
+        {
+            let cached = self.profile.read().await;
+            if let Some(ref profile) = *cached {
+                return Ok(profile.clone());
+            }
+        }
+        self.authenticate().await
     }
 
     // -- Categories ---------------------------------------------------------
@@ -225,8 +240,8 @@ impl XtreamClient {
     pub async fn get_live_categories(&self) -> Result<Vec<XtreamCategory>, XtreamError> {
         let url = build_api_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             "get_live_categories",
         );
         self.get_json(&url).await
@@ -236,8 +251,8 @@ impl XtreamClient {
     pub async fn get_vod_categories(&self) -> Result<Vec<XtreamCategory>, XtreamError> {
         let url = build_api_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             "get_vod_categories",
         );
         self.get_json(&url).await
@@ -247,8 +262,8 @@ impl XtreamClient {
     pub async fn get_series_categories(&self) -> Result<Vec<XtreamCategory>, XtreamError> {
         let url = build_api_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             "get_series_categories",
         );
         self.get_json(&url).await
@@ -266,16 +281,17 @@ impl XtreamClient {
         // Ensure profile is cached for format resolution.
         let user = self.get_user_profile().await?;
 
-        let action = match category_id {
-            Some(cid) => format!("get_live_streams&category_id={cid}"),
-            None => "get_live_streams".to_string(),
-        };
+        let mut extra_params = Vec::new();
+        if let Some(cid) = category_id {
+            extra_params.push(("category_id", cid));
+        }
 
-        let url = build_api_url(
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_live_streams",
+            &extra_params,
         );
 
         let mut channels: Vec<XtreamChannel> = self.get_json(&url).await?;
@@ -286,8 +302,8 @@ impl XtreamClient {
         for ch in &mut channels {
             ch.url = Some(build_stream_url(
                 &self.creds.base_url,
-                &self.creds.username,
-                &self.creds.password,
+                self.creds.username.expose_secret(),
+                self.creds.password.expose_secret(),
                 StreamType::Channel,
                 ch.stream_id,
                 &ext,
@@ -309,16 +325,17 @@ impl XtreamClient {
         // Ensure profile is cached.
         let _user = self.get_user_profile().await?;
 
-        let action = match category_id {
-            Some(cid) => format!("get_vod_streams&category_id={cid}"),
-            None => "get_vod_streams".to_string(),
-        };
+        let mut extra_params = Vec::new();
+        if let Some(cid) = category_id {
+            extra_params.push(("category_id", cid));
+        }
 
-        let url = build_api_url(
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_vod_streams",
+            &extra_params,
         );
 
         let mut movies: Vec<XtreamMovieListing> = self.get_json(&url).await?;
@@ -327,8 +344,8 @@ impl XtreamClient {
             let ext = movie.container_extension.as_deref().unwrap_or("mp4");
             movie.url = Some(build_stream_url(
                 &self.creds.base_url,
-                &self.creds.username,
-                &self.creds.password,
+                self.creds.username.expose_secret(),
+                self.creds.password.expose_secret(),
                 StreamType::Movie,
                 movie.stream_id,
                 ext,
@@ -343,12 +360,13 @@ impl XtreamClient {
         // Ensure profile is cached.
         let _user = self.get_user_profile().await?;
 
-        let action = format!("get_vod_info&vod_id={vod_id}");
-        let url = build_api_url(
+        let vod_id_string = vod_id.to_string();
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_vod_info",
+            &[("vod_id", vod_id_string.as_str())],
         );
 
         let mut movie: XtreamMovie = self.get_json(&url).await?;
@@ -364,8 +382,8 @@ impl XtreamClient {
             let ext = data.container_extension.as_deref().unwrap_or("mp4");
             movie.url = Some(build_stream_url(
                 &self.creds.base_url,
-                &self.creds.username,
-                &self.creds.password,
+                self.creds.username.expose_secret(),
+                self.creds.password.expose_secret(),
                 StreamType::Movie,
                 data.stream_id,
                 ext,
@@ -382,16 +400,17 @@ impl XtreamClient {
         &self,
         category_id: Option<&str>,
     ) -> Result<Vec<XtreamShowListing>, XtreamError> {
-        let action = match category_id {
-            Some(cid) => format!("get_series&category_id={cid}"),
-            None => "get_series".to_string(),
-        };
+        let mut extra_params = Vec::new();
+        if let Some(cid) = category_id {
+            extra_params.push(("category_id", cid));
+        }
 
-        let url = build_api_url(
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_series",
+            &extra_params,
         );
 
         self.get_json(&url).await
@@ -400,12 +419,13 @@ impl XtreamClient {
     /// Fetch detailed information about a specific series, including seasons
     /// and episodes. Episode stream URLs are automatically attached.
     pub async fn get_series_info(&self, series_id: i64) -> Result<XtreamShow, XtreamError> {
-        let action = format!("get_series_info&series_id={series_id}");
-        let url = build_api_url(
+        let series_id_string = series_id.to_string();
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_series_info",
+            &[("series_id", series_id_string.as_str())],
         );
 
         let mut show: XtreamShow = self.get_json(&url).await?;
@@ -430,8 +450,8 @@ impl XtreamClient {
                 if let Some(id) = ep_id {
                     ep.url = Some(build_stream_url(
                         &self.creds.base_url,
-                        &self.creds.username,
-                        &self.creds.password,
+                        self.creds.username.expose_secret(),
+                        self.creds.password.expose_secret(),
                         StreamType::Episode,
                         id,
                         ext,
@@ -453,16 +473,19 @@ impl XtreamClient {
         stream_id: i64,
         limit: Option<u32>,
     ) -> Result<XtreamShortEpg, XtreamError> {
-        let action = match limit {
-            Some(l) => format!("get_short_epg&stream_id={stream_id}&limit={l}"),
-            None => format!("get_short_epg&stream_id={stream_id}"),
-        };
+        let stream_id_string = stream_id.to_string();
+        let limit_string = limit.map(|l| l.to_string());
+        let mut extra_params = vec![("stream_id", stream_id_string.as_str())];
+        if let Some(ref limit_value) = limit_string {
+            extra_params.push(("limit", limit_value.as_str()));
+        }
 
-        let url = build_api_url(
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_short_epg",
+            &extra_params,
         );
 
         let mut epg: XtreamShortEpg = self.get_json(&url).await?;
@@ -480,12 +503,13 @@ impl XtreamClient {
     ///
     /// Base64-encoded titles and descriptions are decoded transparently.
     pub async fn get_full_epg(&self, stream_id: i64) -> Result<XtreamFullEpg, XtreamError> {
-        let action = format!("get_simple_data_table&stream_id={stream_id}");
-        let url = build_api_url(
+        let stream_id_string = stream_id.to_string();
+        let url = build_api_url_with_params(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
-            &action,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
+            "get_simple_data_table",
+            &[("stream_id", stream_id_string.as_str())],
         );
 
         let mut epg: XtreamFullEpg = self.get_json(&url).await?;
@@ -505,8 +529,8 @@ impl XtreamClient {
     pub fn stream_url(&self, stream_type: StreamType, stream_id: i64, extension: &str) -> String {
         build_stream_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             stream_type,
             stream_id,
             extension,
@@ -517,8 +541,8 @@ impl XtreamClient {
     pub fn xmltv_url(&self) -> String {
         build_xmltv_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
         )
     }
 
@@ -526,8 +550,8 @@ impl XtreamClient {
     pub fn timeshift_url(&self, stream_id: i64, duration_minutes: u32, start: &str) -> String {
         build_timeshift_url(
             &self.creds.base_url,
-            &self.creds.username,
-            &self.creds.password,
+            self.creds.username.expose_secret(),
+            self.creds.password.expose_secret(),
             stream_id,
             duration_minutes,
             start,
@@ -538,61 +562,72 @@ impl XtreamClient {
 
     /// Send a GET request and deserialize the JSON response.
     async fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, XtreamError> {
-        let response = self
-            .http
-            .get(url)
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+        let mut remaining_retries = self.config.rate_limit_retries;
 
-        let status = response.status();
+        loop {
+            let response = self
+                .http
+                .get(url)
+                .header("Accept", "application/json")
+                .send()
+                .await?;
 
-        match status {
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                return Err(XtreamError::Auth(format!("server returned {status}")));
+            let status = response.status();
+
+            match status {
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                    return Err(XtreamError::Auth(format!("server returned {status}")));
+                }
+                StatusCode::TOO_MANY_REQUESTS => {
+                    let retry_after = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(60);
+
+                    if remaining_retries > 0 {
+                        remaining_retries -= 1;
+                        tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                        continue;
+                    }
+
+                    return Err(XtreamError::RateLimited {
+                        retry_after_secs: retry_after,
+                    });
+                }
+                s if s.is_server_error() => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(XtreamError::Network(format!("server error {s}: {body}")));
+                }
+                _ => {}
             }
-            StatusCode::TOO_MANY_REQUESTS => {
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60);
-                return Err(XtreamError::RateLimited {
-                    retry_after_secs: retry_after,
-                });
-            }
-            s if s.is_server_error() => {
+
+            if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
-                return Err(XtreamError::Network(format!("server error {s}: {body}")));
+                return Err(XtreamError::UnexpectedResponse(format!(
+                    "unexpected status {status}: {body}"
+                )));
             }
-            _ => {}
+
+            let text = response.text().await?;
+
+            // Some servers return empty responses or `{\"info\":[]}` for not-found.
+            if text.is_empty() {
+                return Err(XtreamError::UnexpectedResponse(
+                    "empty response body".into(),
+                ));
+            }
+
+            return serde_json::from_str(&text).map_err(|e| {
+                warn!(
+                    error = %e,
+                    body_preview = &text[..text.len().min(200)],
+                    "failed to parse Xtream response"
+                );
+                XtreamError::UnexpectedResponse(format!("json parse error: {e}"))
+            });
         }
-
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(XtreamError::UnexpectedResponse(format!(
-                "unexpected status {status}: {body}"
-            )));
-        }
-
-        let text = response.text().await?;
-
-        // Some servers return empty responses or `{"info":[]}` for not-found.
-        if text.is_empty() {
-            return Err(XtreamError::UnexpectedResponse(
-                "empty response body".into(),
-            ));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            warn!(
-                error = %e,
-                body_preview = &text[..text.len().min(200)],
-                "failed to parse Xtream response"
-            );
-            XtreamError::UnexpectedResponse(format!("json parse error: {e}"))
-        })
     }
 }
 

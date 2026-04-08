@@ -15,6 +15,8 @@ Async Xtream Codes API client for IPTV services.
 - short/full EPG fetches
 - typed Xtream response models
 - helper URL generation
+- cached full profile access after authentication
+- optional built-in retry on 429/rate-limit responses
 
 ## Installation
 
@@ -59,6 +61,12 @@ assert!(!profile.user_info.username.is_empty());
 - syncing IPTV provider content into an app/backend
 - validating account credentials
 - building provider-specific import tools
+
+## Security And Retry Behavior
+
+- credentials are redacted from `Debug` output and stored using secret-carrying types internally
+- the client can retry on 429 responses using `XtreamClientConfig::rate_limit_retries`
+- request construction now uses structured query parameter building for category, info, and EPG endpoints
 
 ## Current Limitations
 

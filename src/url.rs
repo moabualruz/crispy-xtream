@@ -3,6 +3,7 @@
 //! These are synchronous, pure functions — no network calls.
 
 use crate::types::{StreamFormat, StreamType};
+use url::Url;
 
 /// Build a stream URL.
 ///
@@ -51,8 +52,30 @@ pub fn build_xmltv_url(base_url: &str, username: &str, password: &str) -> String
 ///
 /// Format: `{base}/player_api.php?username={user}&password={pass}&action={action}`
 pub fn build_api_url(base_url: &str, username: &str, password: &str, action: &str) -> String {
+    build_api_url_with_params(base_url, username, password, action, &[])
+}
+
+/// Build the player API URL with additional query parameters.
+pub fn build_api_url_with_params(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    action: &str,
+    extra_params: &[(&str, &str)],
+) -> String {
     let base = base_url.trim_end_matches('/');
-    format!("{base}/player_api.php?username={username}&password={password}&action={action}")
+    let mut url =
+        Url::parse(&format!("{base}/player_api.php")).expect("base_url must be a valid URL");
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("username", username);
+        query.append_pair("password", password);
+        query.append_pair("action", action);
+        for (key, value) in extra_params {
+            query.append_pair(key, value);
+        }
+    }
+    url.into()
 }
 
 /// Determine the effective format extension for a channel stream.
