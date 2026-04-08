@@ -19,8 +19,8 @@ use crate::types::{
     XtreamUserProfile,
 };
 use crate::url::{
-    build_api_url, build_api_url_with_params, build_stream_url, build_timeshift_url, build_xmltv_url,
-    effective_channel_extension,
+    build_api_url, build_api_url_with_params, build_stream_url, build_timeshift_url,
+    build_xmltv_url, effective_channel_extension,
 };
 
 // ---------------------------------------------------------------------------
