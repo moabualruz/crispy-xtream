@@ -57,7 +57,42 @@ end
 
 trusted_check = steps.find { |step| step['name'] == 'Verify host-prepared PR checkout' }
 assert(trusted_check && trusted_check['if'].include?(pull_request) && trusted_check['if'].include?(same_repo), 'trusted checkout verification is missing or misrouted')
-assert(trusted_check['run'].include?('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'), 'trusted checkout must verify exact GITHUB_SHA')
+assert(trusted_check.dig('env', 'PR_HEAD_SHA') == '${{ github.event.pull_request.head.sha }}', 'trusted checkout must use the PR head SHA')
+Dir.mktmpdir('runner-checkout-repo') do |repo|
+  Open3.capture3('git', 'init', '-q', chdir: repo).then do |out, err, status|
+    raise "git init failed: #{out} #{err}" unless status.success?
+  end
+  Open3.capture3('git', 'config', 'user.name', 'Workflow Contract Test', chdir: repo)
+  Open3.capture3('git', 'config', 'user.email', 'workflow-contract@example.invalid', chdir: repo)
+  File.write(File.join(repo, 'source.txt'), 'PR head')
+  Open3.capture3('git', 'add', 'source.txt', chdir: repo)
+  out, err, status = Open3.capture3('git', 'commit', '-qm', 'PR head', chdir: repo)
+  raise "git commit failed: #{out} #{err}" unless status.success?
+  head_sha, err, status = Open3.capture3('git', 'rev-parse', 'HEAD', chdir: repo)
+  raise "git rev-parse failed: #{err}" unless status.success?
+  head_sha = head_sha.strip
+
+  File.write(File.join(repo, 'source.txt'), 'merge result')
+  Open3.capture3('git', 'commit', '-qam', 'merge result', chdir: repo)
+  merge_sha, err, status = Open3.capture3('git', 'rev-parse', 'HEAD', chdir: repo)
+  raise "git rev-parse failed: #{err}" unless status.success?
+  merge_sha = merge_sha.strip
+  assert(head_sha != merge_sha, 'checkout fixture must distinguish PR head from merge SHA')
+
+  Open3.capture3('git', 'checkout', '-q', head_sha, chdir: repo)
+  _out, err, status = Open3.capture3(
+    { 'PR_HEAD_SHA' => head_sha, 'GITHUB_SHA' => merge_sha },
+    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo
+  )
+  raise "PR head checkout was rejected: #{err}" unless status.success?
+
+  Open3.capture3('git', 'checkout', '-q', merge_sha, chdir: repo)
+  _out, _err, status = Open3.capture3(
+    { 'PR_HEAD_SHA' => head_sha, 'GITHUB_SHA' => merge_sha },
+    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo
+  )
+  assert(!status.success?, 'merge checkout must not pass as the host-prepared PR head')
+end
 
 archive = steps.find { |step| step['name'] == 'Create source archive' }
 assert(archive && archive['if'].include?(fork_route), 'source archive must be limited to forks and non-PR events')

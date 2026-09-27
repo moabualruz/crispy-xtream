@@ -40,8 +40,10 @@ jobs:
           ruby-version: '3.4'
       - name: Verify host-prepared PR checkout
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
       - name: Verify runner workflow contract
         run: ruby tests/runner_workflow_contract.rb
       - name: Create source archive
