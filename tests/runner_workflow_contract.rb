@@ -30,12 +30,30 @@ assert(triggers(CI).key?('pull_request'), 'pull_request trigger was removed')
 assert(triggers(CI).fetch('push').fetch('branches') == ['main'], 'push main trigger changed')
 assert(triggers(CI).key?('workflow_dispatch'), 'workflow_dispatch trigger was removed')
 assert(prepare['runs-on'].include?('self-hosted') && prepare['runs-on'].include?('linux') && prepare['runs-on'].include?('x64') && prepare['runs-on'].include?('generic'), 'trusted runner is missing required labels')
-assert(prepare['runs-on'].include?('pr-{0}-{1}-run-{2}-attempt-{3}'), 'trusted runner label does not include repository, PR, run, and attempt')
+assert(prepare['runs-on'].include?('pr-{0}-{1}'), 'trusted runner label must include repository and PR')
+assert(!prepare['runs-on'].include?('run-{2}') && !prepare['runs-on'].include?('attempt-{3}'), 'trusted runner label must remain stable across runs and attempts')
 assert(prepare['group'].nil?, 'runner group must remain unset for repo-level registration')
 assert(checkout.length == 1, 'prepare must contain exactly one checkout')
 assert(checkout.first['if'].include?(fork_route), 'checkout must run only for forks and non-PR events')
 assert(checkout.first.dig('with', 'persist-credentials') == false, 'CI checkout must not persist credentials')
 assert(ruby_setup && ruby_setup.dig('with', 'ruby-version') == '3.4', 'CI must provision the documented Ruby version')
+
+route = steps.find { |step| step['name'] == 'Select trusted runner route' }
+assert(route, 'trusted runner route selection is missing')
+Dir.mktmpdir('runner-route') do |dir|
+  output = File.join(dir, 'github-output')
+  route_env = {
+    'EVENT_NAME' => 'pull_request',
+    'HEAD_REPOSITORY' => 'moabualruz/crispy-xtream',
+    'BASE_REPOSITORY' => 'moabualruz/crispy-xtream',
+    'REPOSITORY_ID' => '1204727171',
+    'PR_NUMBER' => '2',
+    'GITHUB_OUTPUT' => output
+  }
+  _stdout, stderr, status = Open3.capture3(route_env, 'bash', '-eu', '-c', route.fetch('run'))
+  raise "runner route command failed: #{stderr}" unless status.success?
+  assert(File.read(output) == "runs_on=[\"self-hosted\",\"linux\",\"x64\",\"generic\",\"pr-1204727171-2\"]\n", 'trusted runner label must be stable for one repository and PR')
+end
 
 trusted_check = steps.find { |step| step['name'] == 'Verify host-prepared PR checkout' }
 assert(trusted_check && trusted_check['if'].include?(pull_request) && trusted_check['if'].include?(same_repo), 'trusted checkout verification is missing or misrouted')

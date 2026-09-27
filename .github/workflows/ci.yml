@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}-run-{2}-attempt-{3}"]', github.repository_id, github.event.pull_request.number, github.run_id, github.run_attempt)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
     outputs:
       runs_on: ${{ steps.route.outputs.runs_on }}
     steps:
@@ -23,11 +23,9 @@ jobs:
           BASE_REPOSITORY: ${{ github.repository }}
           REPOSITORY_ID: ${{ github.repository_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           if [[ "$EVENT_NAME" == pull_request && "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
-            printf 'runs_on=["self-hosted","linux","x64","generic","pr-%s-%s-run-%s-attempt-%s"]\n' "$REPOSITORY_ID" "$PR_NUMBER" "$RUN_ID" "$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+            printf 'runs_on=["self-hosted","linux","x64","generic","pr-%s-%s"]\n' "$REPOSITORY_ID" "$PR_NUMBER" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == pull_request ]]; then
             printf 'runs_on="ubuntu-latest"\n' >> "$GITHUB_OUTPUT"
           else
