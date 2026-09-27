@@ -35,7 +35,6 @@ steps = prepare.fetch('steps')
 checkout = steps.select do |step|
   step['uses'].to_s.start_with?('actions/checkout@')
 end
-ruby_setup = steps.find { |step| step['uses'] == 'ruby/setup-ruby@v1' }
 
 assert(triggers(CI).key?('pull_request'), 'pull_request trigger was removed')
 assert(
@@ -75,8 +74,8 @@ assert(
   'CI checkout must not persist credentials',
 )
 assert(
-  ruby_setup && ruby_setup.dig('with', 'ruby-version') == '3.4',
-  'CI must provision the documented Ruby version',
+  steps.none? { |step| step['uses'] == 'ruby/setup-ruby@v1' },
+  'CI must use the runner-provisioned Ruby runtime',
 )
 
 route = steps.find { |step| step['name'] == 'Select trusted runner route' }
@@ -110,11 +109,6 @@ trusted_route = trusted_check &&
                 trusted_check['if'].include?(pull_request) &&
                 trusted_check['if'].include?(same_repo)
 assert(trusted_route, 'trusted checkout verification is missing or misrouted')
-head_expression = '${{ github.event.pull_request.head.sha }}'
-assert(
-  trusted_check.dig('env', 'PR_HEAD_SHA') == head_expression,
-  'trusted checkout must use the PR head SHA',
-)
 Dir.mktmpdir('runner-checkout-repo') do |repo|
   Open3.capture3('git', 'init', '-q', chdir: repo).then do |out, err, status|
     raise "git init failed: #{out} #{err}" unless status.success?
@@ -147,24 +141,24 @@ Dir.mktmpdir('runner-checkout-repo') do |repo|
   merge_sha = merge_sha.strip
   assert(
     head_sha != merge_sha,
-    'checkout fixture must distinguish PR head from merge SHA',
+    'checkout fixture must distinguish PR head from prepared merge SHA',
   )
-
-  Open3.capture3('git', 'checkout', '-q', head_sha, chdir: repo)
-  _out, err, status = Open3.capture3(
-    { 'PR_HEAD_SHA' => head_sha, 'GITHUB_SHA' => merge_sha },
-    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo,
-  )
-  raise "PR head checkout was rejected: #{err}" unless status.success?
 
   Open3.capture3('git', 'checkout', '-q', merge_sha, chdir: repo)
+  _out, err, status = Open3.capture3(
+    { 'GITHUB_SHA' => merge_sha },
+    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo,
+  )
+  raise "prepared merge checkout was rejected: #{err}" unless status.success?
+
+  Open3.capture3('git', 'checkout', '-q', head_sha, chdir: repo)
   _out, _err, status = Open3.capture3(
-    { 'PR_HEAD_SHA' => head_sha, 'GITHUB_SHA' => merge_sha },
+    { 'GITHUB_SHA' => merge_sha },
     'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo,
   )
   assert(
     !status.success?,
-    'merge checkout must not pass as the host-prepared PR head',
+    'PR head checkout must not pass when the prepared GITHUB_SHA is the merge commit',
   )
 end
 
