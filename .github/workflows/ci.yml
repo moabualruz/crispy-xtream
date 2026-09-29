@@ -97,7 +97,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   cargo-test:
     needs: prepare
@@ -117,7 +117,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-      - run: cargo test --all-features
+      - run: cargo test --locked --all-features
 
   doc:
     needs: prepare
@@ -137,7 +137,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-      - run: cargo doc --no-deps
+      - run: cargo doc --locked --no-deps
 
   package:
     needs: prepare
@@ -157,7 +157,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-      - run: cargo package
+      - run: cargo package --locked
 
   test:
     if: ${{ !cancelled() }}

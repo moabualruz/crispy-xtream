@@ -11,6 +11,17 @@ def assert(condition, message)
   raise message unless condition
 end
 
+def ruby_setup_action?(reference)
+  reference.to_s.start_with?('ruby/setup-ruby')
+end
+
+assert(
+  %w[ruby/setup-ruby@v2 ruby/setup-ruby@abc123 ruby/setup-ruby].all? do |ref|
+    ruby_setup_action?(ref)
+  end && !ruby_setup_action?('actions/checkout@v4'),
+  'Ruby setup guard must match any ruby/setup-ruby reference',
+)
+
 def triggers(workflow)
   workflow['on'] || workflow[true]
 end
@@ -74,7 +85,9 @@ assert(
   'CI checkout must not persist credentials',
 )
 assert(
-  steps.none? { |step| step['uses'] == 'ruby/setup-ruby@v1' },
+  jobs.values.flat_map { |job| job['steps'] }.none? do |step|
+    ruby_setup_action?(step['uses'])
+  end,
   'CI must use the runner-provisioned Ruby runtime',
 )
 
