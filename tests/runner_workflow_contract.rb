@@ -1,0 +1,294 @@
+require 'fileutils'
+require 'open3'
+require 'tmpdir'
+require 'yaml'
+
+ROOT = File.expand_path('..', __dir__)
+CI = YAML.load_file(File.join(ROOT, '.github/workflows/ci.yml'))
+RELEASE = YAML.load_file(File.join(ROOT, '.github/workflows/release.yml'))
+
+def assert(condition, message)
+  raise message unless condition
+end
+
+def ruby_setup_action?(reference)
+  reference.to_s.start_with?('ruby/setup-ruby')
+end
+
+assert(
+  %w[ruby/setup-ruby@v2 ruby/setup-ruby@abc123 ruby/setup-ruby].all? do |ref|
+    ruby_setup_action?(ref)
+  end && !ruby_setup_action?('actions/checkout@v4'),
+  'Ruby setup guard must match any ruby/setup-ruby reference',
+)
+
+def triggers(workflow)
+  workflow['on'] || workflow[true]
+end
+
+pull_request = "github.event_name == 'pull_request'"
+same_repo = "github.event.pull_request.head.repo.full_name == github.repository"
+fork_route = [
+  "github.event_name != 'pull_request'",
+  "github.event.pull_request.head.repo.full_name != github.repository",
+].join(' || ')
+jobs = CI.fetch('jobs')
+assert(
+  !CI.to_s.include?('always()'),
+  'CI contains a cancellation-unsafe always() condition',
+)
+assert(
+  CI.dig('concurrency', 'cancel-in-progress') != true,
+  'CI must not cancel in-progress runs',
+)
+prepare = jobs.fetch('prepare')
+steps = prepare.fetch('steps')
+checkout = steps.select do |step|
+  step['uses'].to_s.start_with?('actions/checkout@')
+end
+
+assert(triggers(CI).key?('pull_request'), 'pull_request trigger was removed')
+assert(
+  triggers(CI).fetch('push').fetch('branches') == ['main'],
+  'push main trigger changed',
+)
+assert(
+  triggers(CI).key?('workflow_dispatch'),
+  'workflow_dispatch trigger was removed',
+)
+trusted_labels = %w[self-hosted linux x64 generic]
+assert(
+  trusted_labels.all? { |label| prepare['runs-on'].include?(label) },
+  'trusted runner is missing required labels',
+)
+assert(
+  prepare['runs-on'].include?('pr-{0}-{1}'),
+  'trusted runner label must include repository and PR',
+)
+stable_label = !prepare['runs-on'].include?('run-{2}') &&
+               !prepare['runs-on'].include?('attempt-{3}')
+assert(
+  stable_label,
+  'trusted runner label must remain stable across runs and attempts',
+)
+assert(
+  prepare['group'].nil?,
+  'runner group must remain unset for repo-level registration',
+)
+assert(checkout.length == 1, 'prepare must contain exactly one checkout')
+assert(
+  checkout.first['if'].include?(fork_route),
+  'checkout must run only for forks and non-PR events',
+)
+assert(
+  checkout.first.dig('with', 'persist-credentials') == false,
+  'CI checkout must not persist credentials',
+)
+assert(
+  jobs.values.flat_map { |job| job['steps'] }.none? do |step|
+    ruby_setup_action?(step['uses'])
+  end,
+  'CI must use the runner-provisioned Ruby runtime',
+)
+
+route = steps.find { |step| step['name'] == 'Select trusted runner route' }
+assert(route, 'trusted runner route selection is missing')
+Dir.mktmpdir('runner-route') do |dir|
+  output = File.join(dir, 'github-output')
+  route_env = {
+    'EVENT_NAME' => 'pull_request',
+    'HEAD_REPOSITORY' => 'moabualruz/crispy-xtream',
+    'BASE_REPOSITORY' => 'moabualruz/crispy-xtream',
+    'REPOSITORY_ID' => '1204727171',
+    'PR_NUMBER' => '2',
+    'GITHUB_OUTPUT' => output,
+  }
+  _stdout, stderr, status = Open3.capture3(
+    route_env, 'bash', '-eu', '-c', route.fetch('run'),
+  )
+  raise "runner route command failed: #{stderr}" unless status.success?
+  expected = %(runs_on=["self-hosted","linux","x64","generic",) +
+             %("pr-1204727171-2"]\n)
+  assert(
+    File.read(output) == expected,
+    'trusted runner label must be stable for one repository and PR',
+  )
+end
+
+trusted_check = steps.find do |step|
+  step['name'] == 'Verify host-prepared PR checkout'
+end
+trusted_route = trusted_check &&
+                trusted_check['if'].include?(pull_request) &&
+                trusted_check['if'].include?(same_repo)
+assert(trusted_route, 'trusted checkout verification is missing or misrouted')
+Dir.mktmpdir('runner-checkout-repo') do |repo|
+  Open3.capture3('git', 'init', '-q', chdir: repo).then do |out, err, status|
+    raise "git init failed: #{out} #{err}" unless status.success?
+  end
+  Open3.capture3(
+    'git', 'config', 'user.name', 'Workflow Contract Test', chdir: repo,
+  )
+  Open3.capture3(
+    'git', 'config', 'user.email', 'workflow-contract@example.invalid',
+    chdir: repo,
+  )
+  File.write(File.join(repo, 'source.txt'), 'PR head')
+  Open3.capture3('git', 'add', 'source.txt', chdir: repo)
+  out, err, status = Open3.capture3(
+    'git', 'commit', '-qm', 'PR head', chdir: repo,
+  )
+  raise "git commit failed: #{out} #{err}" unless status.success?
+  head_sha, err, status = Open3.capture3(
+    'git', 'rev-parse', 'HEAD', chdir: repo,
+  )
+  raise "git rev-parse failed: #{err}" unless status.success?
+  head_sha = head_sha.strip
+
+  File.write(File.join(repo, 'source.txt'), 'merge result')
+  Open3.capture3('git', 'commit', '-qam', 'merge result', chdir: repo)
+  merge_sha, err, status = Open3.capture3(
+    'git', 'rev-parse', 'HEAD', chdir: repo,
+  )
+  raise "git rev-parse failed: #{err}" unless status.success?
+  merge_sha = merge_sha.strip
+  assert(
+    head_sha != merge_sha,
+    'checkout fixture must distinguish PR head from prepared merge SHA',
+  )
+
+  Open3.capture3('git', 'checkout', '-q', merge_sha, chdir: repo)
+  _out, err, status = Open3.capture3(
+    { 'GITHUB_SHA' => merge_sha },
+    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo,
+  )
+  raise "prepared merge checkout was rejected: #{err}" unless status.success?
+
+  Open3.capture3('git', 'checkout', '-q', head_sha, chdir: repo)
+  _out, _err, status = Open3.capture3(
+    { 'GITHUB_SHA' => merge_sha },
+    'bash', '-eu', '-c', trusted_check.fetch('run'), chdir: repo,
+  )
+  assert(
+    !status.success?,
+    'PR head checkout must not pass when the prepared GITHUB_SHA is the merge commit',
+  )
+end
+
+archive = steps.find { |step| step['name'] == 'Create source archive' }
+assert(
+  archive && archive['if'].include?(fork_route),
+  'source archive must be limited to forks and non-PR events',
+)
+assert(
+  archive['run'].include?('git archive --format=tar "$GITHUB_SHA"'),
+  'archive must come from GITHUB_SHA',
+)
+upload = steps.find do |step|
+  step['uses'].to_s.start_with?('actions/upload-artifact@')
+end
+artifact_name = 'source-${{ github.run_id }}-${{ github.run_attempt }}'
+assert(
+  upload.dig('with', 'name') == artifact_name,
+  'source artifact must be run and attempt scoped',
+)
+assert(
+  upload['if'].include?(fork_route),
+  'source artifact upload must be limited to forks and non-PR events',
+)
+
+jobs.each do |job_name, job|
+  next if job_name == 'prepare'
+
+  job_steps = job.fetch('steps')
+  checks_out_again = job_steps.any? do |step|
+    step['uses'].to_s.start_with?('actions/checkout@')
+  end
+  assert(!checks_out_again, "#{job_name} must not check out source again")
+  next if job_name == 'test'
+
+  downloads = job_steps.select do |step|
+    step['uses'].to_s.start_with?('actions/download-artifact@')
+  end
+  assert(
+    downloads.length == 1,
+    "#{job_name} must consume the single prepared source artifact",
+  )
+  assert(
+    downloads.first.dig('with', 'name') == artifact_name,
+    "#{job_name} artifact name must be run and attempt scoped",
+  )
+end
+
+Dir.mktmpdir('runner-contract-repo') do |repo|
+  Dir.mktmpdir('runner-contract-restored') do |restored|
+    FileUtils.mkdir_p(File.join(repo, 'tracked'))
+    File.write(File.join(repo, 'tracked/source.txt'), 'committed source')
+    Open3.capture3('git', 'init', '-q', chdir: repo).then do |out, err, status|
+      raise "git init failed: #{out} #{err}" unless status.success?
+    end
+    Open3.capture3(
+      'git', 'config', 'user.name', 'Workflow Contract Test', chdir: repo,
+    )
+    Open3.capture3(
+      'git', 'config', 'user.email', 'workflow-contract@example.invalid',
+      chdir: repo,
+    )
+    Open3.capture3('git', 'add', 'tracked/source.txt', chdir: repo)
+    out, err, status = Open3.capture3(
+      'git', 'commit', '-qm', 'fixture', chdir: repo,
+    )
+    raise "git commit failed: #{out} #{err}" unless status.success?
+    sha, err, status = Open3.capture3(
+      'git', 'rev-parse', 'HEAD', chdir: repo,
+    )
+    raise "git rev-parse failed: #{err}" unless status.success?
+    sha = sha.strip
+    File.write(File.join(repo, 'untracked.txt'), 'must not ship')
+
+    runner_temp = File.join(repo, 'runner-temp')
+    FileUtils.mkdir_p(runner_temp)
+    _out, err, status = Open3.capture3(
+      { 'GITHUB_SHA' => sha, 'RUNNER_TEMP' => runner_temp },
+      'bash', '-eu', '-c', archive.fetch('run'), chdir: repo,
+    )
+    raise "workflow archive command failed: #{err}" unless status.success?
+    tarball = File.join(runner_temp, 'source.tar.gz')
+    _out, err, status = Open3.capture3('tar', '-xzf', tarball, '-C', restored)
+    raise "archive extraction failed: #{err}" unless status.success?
+
+    expected, err, status = Open3.capture3(
+      'git', 'show', "#{sha}:tracked/source.txt", chdir: repo,
+    )
+    raise "git show failed: #{err}" unless status.success?
+    actual_source = File.read(File.join(restored, 'tracked/source.txt'))
+    assert(actual_source == expected, 'restored source differs from GITHUB_SHA')
+    assert(
+      !File.exist?(File.join(restored, '.git')),
+      '.git metadata leaked into source archive',
+    )
+    assert(
+      !File.exist?(File.join(restored, 'untracked.txt')),
+      'untracked working tree file leaked into source archive',
+    )
+    restored_files = Dir.glob(File.join(restored, '**', '*')).map do |path|
+      path.sub("#{restored}/", '')
+    end.sort
+    expected_files = ['tracked', 'tracked/source.txt']
+    assert(
+      restored_files == expected_files,
+      'archive contains unexpected files',
+    )
+  end
+end
+
+release_steps = RELEASE.fetch('jobs').fetch('release-check').fetch('steps')
+release_checkout = release_steps.find do |step|
+  step['uses'].to_s.start_with?('actions/checkout@')
+end
+assert(
+  release_checkout.dig('with', 'persist-credentials') == false,
+  'release checkout must not persist credentials',
+)
+
+puts 'Runner workflow contract verified'

@@ -50,6 +50,7 @@ development environment.
 
 - [Flutter](https://flutter.dev/docs/get-started/install) 3.7+
 - [Rust](https://rustup.rs/) stable toolchain
+- Ruby 3.4+ for `just ci` workflow contract checks
 - Platform-specific tools:
   - **Windows:** Visual Studio with C++ workload
   - **macOS:** Xcode
