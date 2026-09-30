@@ -51,7 +51,8 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source.tar.gz
           if-no-files-found: error
           retention-days: 1
@@ -67,7 +68,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         uses: actions/download-artifact@v8
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source
       - name: Unpack prepared source
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
@@ -88,7 +89,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         uses: actions/download-artifact@v8
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source
       - name: Unpack prepared source
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
@@ -109,7 +110,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         uses: actions/download-artifact@v8
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source
       - name: Unpack prepared source
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
@@ -129,7 +130,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         uses: actions/download-artifact@v8
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source
       - name: Unpack prepared source
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
@@ -149,7 +150,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
         uses: actions/download-artifact@v8
         with:
-          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          name: source-${{ github.run_id }}
           path: ${{ runner.temp }}/source
       - name: Unpack prepared source
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}

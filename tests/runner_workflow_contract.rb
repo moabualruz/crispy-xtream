@@ -187,10 +187,10 @@ assert(
 upload = steps.find do |step|
   step['uses'].to_s.start_with?('actions/upload-artifact@')
 end
-artifact_name = 'source-${{ github.run_id }}-${{ github.run_attempt }}'
+artifact_name = 'source-${{ github.run_id }}'
 assert(
   upload.dig('with', 'name') == artifact_name,
-  'source artifact must be run and attempt scoped',
+  'source artifact must be run scoped, not attempt scoped',
 )
 assert(
   upload['if'].include?(fork_route),
@@ -216,7 +216,7 @@ jobs.each do |job_name, job|
   )
   assert(
     downloads.first.dig('with', 'name') == artifact_name,
-    "#{job_name} artifact name must be run and attempt scoped",
+    "#{job_name} artifact name must be run scoped, not attempt scoped",
   )
 end
 
@@ -289,6 +289,16 @@ end
 assert(
   release_checkout.dig('with', 'persist-credentials') == false,
   'release checkout must not persist credentials',
+)
+
+ci_text = File.read(File.join(ROOT, '.github/workflows/ci.yml'))
+assert(
+  ci_text.lines.none? { |l| l =~ /^\s+name: .*github\.run_attempt/ },
+  'artifact name must not embed run_attempt (rerun of failed jobs could not find it)',
+)
+assert(
+  ci_text.scan('overwrite: true').size == ci_text.scan('actions/upload-artifact@').size,
+  'every artifact upload must overwrite so a full re-run can republish',
 )
 
 puts 'Runner workflow contract verified'
